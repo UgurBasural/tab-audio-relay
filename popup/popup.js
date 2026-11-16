@@ -11,6 +11,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   const tabALabel = document.getElementById("tabALabel");
   const tabBLabel = document.getElementById("tabBLabel");
   const delayLabel = document.getElementById("delayLabel");
+  const statsLabel = document.getElementById("statsLabel");
+  const statsCount = document.getElementById("statsCount");
 
   const translations = {
     en: {
@@ -21,6 +23,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       tabALabel: "1st Tab (e.g. Video, Learning)",
       tabBLabel: "2nd Tab (e.g. Music, Spotify)",
       delayLabel: "Transition Delay (ms)",
+      statsLabel: "Focus switches today",
       selectPlaceholder: "Select...",
     },
     tr: {
@@ -31,6 +34,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       tabALabel: "1. Sekme (Örn: Video, Eğitim)",
       tabBLabel: "2. Sekme (Örn: Müzik, Spotify)",
       delayLabel: "Geçiş Gecikmesi (ms)",
+      statsLabel: "Bugünkü odak geçişleri",
       selectPlaceholder: "Seçiniz...",
     },
   };
@@ -45,17 +49,21 @@ document.addEventListener("DOMContentLoaded", async () => {
     "tabA",
     "tabB",
     "delayMs",
+    "statsDate",
+    "switchesToday",
   ]);
 
   bridgeToggle.checked = state.bridgeActive || false;
   updateStatusText(bridgeToggle.checked);
   delayInput.value = state.delayMs !== undefined ? state.delayMs : 500;
+  updateStats(state.statsDate, state.switchesToday);
 
   // Populate tabs
   const tabs = await chrome.tabs.query({ url: ["http://*/*", "https://*/*"] });
 
   populateSelect(tabASelect, tabs, state.tabA);
   populateSelect(tabBSelect, tabs, state.tabB);
+  syncDisabledOptions();
 
   // Event Listeners
   bridgeToggle.addEventListener("change", async (e) => {
@@ -63,8 +71,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     state.bridgeActive = isActive;  // ← State'i update et
     updateStatusText(isActive);
     await chrome.storage.local.set({ bridgeActive: isActive });
-    notifyBackground();
-    updateAllButtonStates();  // ← Button'ları enable/disable et
   });
 
   tabASelect.addEventListener("change", async (e) => {
@@ -73,8 +79,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     await validateTabId(value, tabASelect);
     state.tabA = value;
     await chrome.storage.local.set({ tabA: value });
-    notifyBackground();
-    updateAllButtonStates();
+    syncDisabledOptions();
   });
 
   tabBSelect.addEventListener("change", async (e) => {
@@ -83,14 +88,34 @@ document.addEventListener("DOMContentLoaded", async () => {
     await validateTabId(value, tabBSelect);
     state.tabB = value;
     await chrome.storage.local.set({ tabB: value });
-    notifyBackground();
-    updateAllButtonStates();
+    syncDisabledOptions();
   });
 
   delayInput.addEventListener("change", async (e) => {
-    const val = parseInt(e.target.value, 10) || 0;
+    const val = Math.min(Math.max(parseInt(e.target.value, 10) || 0, 0), 5000);
+    e.target.value = val;
     await chrome.storage.local.set({ delayMs: val });
-    notifyBackground();
+  });
+
+  // Kısayol veya sekme kapanması gibi popup dışı değişiklikleri yansıt
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local") return;
+    if ("bridgeActive" in changes) {
+      bridgeToggle.checked = changes.bridgeActive.newValue || false;
+      updateStatusText(bridgeToggle.checked);
+    }
+    // Background sayacı her zaman bugünün tarihiyle yazar
+    if ("switchesToday" in changes) {
+      statsCount.textContent = String(changes.switchesToday.newValue || 0);
+    }
+    if ("tabA" in changes && changes.tabA.newValue == null) {
+      tabASelect.value = "";
+      syncDisabledOptions();
+    }
+    if ("tabB" in changes && changes.tabB.newValue == null) {
+      tabBSelect.value = "";
+      syncDisabledOptions();
+    }
   });
 
   // Play/Pause Button Handlers
@@ -342,8 +367,27 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
   }
 
-  function notifyBackground() {
-    chrome.runtime.sendMessage({ type: "SETTINGS_CHANGED" });
+  // Sayaç başka bir güne aitse bugün için 0 göster
+  function updateStats(statsDate, switchesToday) {
+    statsCount.textContent =
+      statsDate === localDateKey() ? String(switchesToday || 0) : "0";
+  }
+
+  function localDateKey(date = new Date()) {
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  }
+
+  // Aynı sekmenin iki tarafta birden seçilmesini engelle
+  function syncDisabledOptions() {
+    [
+      [tabASelect, tabBSelect],
+      [tabBSelect, tabASelect],
+    ].forEach(([select, other]) => {
+      Array.from(select.options).forEach((option) => {
+        option.disabled = option.value !== "" && option.value === other.value;
+      });
+    });
   }
 
   function detectLocale() {
@@ -365,5 +409,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     tabALabel.textContent = t.tabALabel;
     tabBLabel.textContent = t.tabBLabel;
     delayLabel.textContent = t.delayLabel;
+    statsLabel.textContent = t.statsLabel;
   }
 });

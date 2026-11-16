@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "Audio Bridge: Seamless Tab Sync",
+  "name": "__MSG_extName__",
   "version": "1.0.0",
-  "description": "Farklı tarayıcı sekmeleri arasındaki ses oynatma durumlarını birbirine bağlar.",
+  "description": "__MSG_extDescription__",
+  "default_locale": "en",
   "permissions": [
     "tabs",
     "storage",
@@ -13,9 +14,10 @@
     "<all_urls>"
   ],
   "icons": {
-    "16": "assets/logo.png",
-    "48": "assets/logo.png",
-    "128": "assets/logo.png"
+    "16": "assets/icons/icon-16.png",
+    "32": "assets/icons/icon-32.png",
+    "48": "assets/icons/icon-48.png",
+    "128": "assets/icons/icon-128.png"
   },
   "background": {
     "service_worker": "background.js",
@@ -23,11 +25,12 @@
   },
   "action": {
     "default_popup": "popup/popup.html",
-    "default_title": "Audio Bridge",
+    "default_title": "__MSG_extActionTitle__",
     "default_icon": {
-      "16": "assets/logo.png",
-      "48": "assets/logo.png",
-      "128": "assets/logo.png"
+      "16": "assets/icons/icon-16.png",
+      "32": "assets/icons/icon-32.png",
+      "48": "assets/icons/icon-48.png",
+      "128": "assets/icons/icon-128.png"
     }
   },
   "content_scripts": [
@@ -42,7 +45,7 @@
         "default": "Ctrl+Shift+Y",
         "mac": "Command+Shift+Y"
       },
-      "description": "Audio Bridge'i Aç/Kapat"
+      "description": "__MSG_commandToggleBridge__"
     }
   },
   "browser_specific_settings": {

@@ -2,18 +2,13 @@
 let isBridgePaused = false;
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    // acted: komut sayfada gerçekten bir medyayı duraklattı/oynattı mı (odak sayacı için)
     if (request.action === 'PAUSE_MEDIA') {
-        pauseMedia();
-        sendResponse({ status: "Media paused" });
+        const acted = pauseMedia();
+        sendResponse({status: "Media paused", acted});
     } else if (request.action === 'PLAY_MEDIA') {
-        playMedia();
-        sendResponse({ status: "Media played" });
-    } else if (request.action === 'TOGGLE_MEDIA') {
-        toggleMedia();
-        sendResponse({ status: "Media toggled" });
-    } else if (request.action === 'GET_MEDIA_STATE') {
-        const state = getMediaState();
-        sendResponse(state);
+        const acted = playMedia();
+        sendResponse({status: "Media played", acted});
     }
     return true;
 });
@@ -68,23 +63,26 @@ function pauseMedia() {
         if (ariaLabel === 'Pause' || ariaLabel === 'Duraklat') {
             spotifyBtn.click();
             isBridgePaused = true;
-            return;
+            return true;
         }
     }
 
     // 2. Genel Media Element Kontrolü (YouTube vb.)
     const medias = getMediaElements();
+    let paused = false;
     medias.forEach(media => {
         if (!media.paused) {
             media.pause();
             media.dataset.bridgePaused = 'true';
             isBridgePaused = true;
+            paused = true;
         }
     });
+    return paused;
 }
 
 function playMedia() {
-    if (!isBridgePaused) return;
+    if (!isBridgePaused) return false;
 
     // 1. Spotify Özel Kontrolü
     const spotifyBtn = document.querySelector('[data-testid="control-button-playpause"]');
@@ -93,7 +91,7 @@ function playMedia() {
         if (ariaLabel === 'Play' || ariaLabel === 'Oynat') {
             spotifyBtn.click();
             isBridgePaused = false;
-            return;
+            return true;
         }
     }
 
@@ -111,7 +109,9 @@ function playMedia() {
 
     if (!played && medias.length > 0) {
         medias[0].play().catch(e => console.log('Auto-play prevented:', e));
+        played = true;
     }
     
     isBridgePaused = false;
+    return played;
 }

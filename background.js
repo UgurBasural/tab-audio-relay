@@ -18,14 +18,31 @@ async function loadState() {
     state.tabB = data.tabB || null;
     state.delayMs = data.delayMs !== undefined ? data.delayMs : 500;
     console.log("Audio Bridge State updated (Symmetric):", state);
+    updateBadge();
 }
 
-// Initial load
-loadState();
+// Toolbar rozeti: köprü açıkken ikonda yeşil "ON" göster
+function updateBadge() {
+    chrome.action.setBadgeText({ text: state.bridgeActive ? 'ON' : '' });
+    chrome.action.setBadgeBackgroundColor({ color: '#10b981' });
+    chrome.action.setBadgeTextColor?.({ color: '#ffffff' });
+}
 
-// Popup'tan gelen bildirimleri dinle
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === 'SETTINGS_CHANGED') {
+// Initial load: olay dinleyicileri state yüklenmeden çalışmasın diye bu promise beklenir
+const stateReady = loadState();
+
+// Tarayıcı açılışında/kurulumda worker'ı uyandırıp rozeti geri yükle (rozet oturumlar arasında saklanmaz)
+chrome.runtime.onStartup.addListener(loadState);
+chrome.runtime.onInstalled.addListener(loadState);
+
+// Popup, kısayol veya sekme kapanması storage'ı değiştirdiğinde state'i tazele
+chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local') return;
+    if (['bridgeActive', 'tabA', 'tabB', 'delayMs'].some(key => key in changes)) {
+        // Köprü kapandıysa veya sekmeler değiştiyse bekleyen geçişi iptal et ve takibi sıfırla
+        if ('bridgeActive' in changes || 'tabA' in changes || 'tabB' in changes) {
+            resetTransition();
+        }
         loadState();
     }
 });
@@ -33,6 +50,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // Kısayol (Shortcut) dinleyici
 chrome.commands.onCommand.addListener(async (command) => {
     if (command === 'toggle_bridge') {
+        await stateReady;
         state.bridgeActive = !state.bridgeActive;
         await chrome.storage.local.set({ bridgeActive: state.bridgeActive });
         console.log(`Bridge toggled via shortcut. Active: ${state.bridgeActive}`);
@@ -40,8 +58,10 @@ chrome.commands.onCommand.addListener(async (command) => {
 });
 
 // Sekme durum değişikliklerini dinle
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-    if (!state.bridgeActive || !state.tabA || !state.tabB) return;
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+    if (changeInfo.audible === undefined) return;
+    await stateReady;
+    if (!state.bridgeActive || !state.tabA || !state.tabB || state.tabA === state.tabB) return;
 
     if (changeInfo.audible !== undefined) {
         // Dinlenen iki sekmeden biri mi?
@@ -83,75 +103,59 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
 // Sekme kapatılırsa temizlik yap
 chrome.tabs.onRemoved.addListener(async (tabId) => {
+    await stateReady;
     if (tabId === state.tabA || tabId === state.tabB) {
         if (tabId === state.tabA) await chrome.storage.local.set({ tabA: null, bridgeActive: false });
         if (tabId === state.tabB) await chrome.storage.local.set({ tabB: null, bridgeActive: false });
-        loadState();
     }
 });
 
+function resetTransition() {
+    if (playTimeout) {
+        clearTimeout(playTimeout);
+        playTimeout = null;
+    }
+    intendedPlayingTabId = null;
+}
+
 async function controlMedia(tabId, action) {
+    let response;
     try {
-        // Öncelikle tab'ın hala var olup olmadığını kontrol et
-        const tab = await chrome.tabs.get(tabId);
-        if (!tab) {
-            console.warn(`Tab ${tabId} no longer exists. Clearing from storage.`);
-            clearTabIfInvalid(tabId);
+        response = await chrome.tabs.sendMessage(tabId, { action: action });
+        console.log(`Command ${action} sent successfully to tab ${tabId}.`);
+    } catch (err) {
+        console.log(`Injecting fallback script into tab ${tabId}...`);
+        try {
+            await chrome.scripting.executeScript({
+                target: { tabId: tabId },
+                files: ['content.js']
+            });
+            response = await chrome.tabs.sendMessage(tabId, { action: action });
+        } catch (injectErr) {
+            console.error("Script injection failed:", injectErr);
             return;
         }
-
-        // Chrome internal pages'e mesaj gönderilemez
-        if (tab.url && (tab.url.startsWith('chrome://') || tab.url.startsWith('about:'))) {
-            console.warn(`Cannot control tab ${tabId}: internal page`);
-            return;
-        }
-
-        // Mesajı gönder
-        chrome.tabs.sendMessage(tabId, { action: action }, (response) => {
-            if (chrome.runtime.lastError) {
-                // Content script yoksa, enjekte et ve tekrar gönder
-                console.log(`Content script not ready in tab ${tabId}, will inject...`);
-                chrome.scripting.executeScript({
-                    target: { tabId: tabId },
-                    files: ['content.js']
-                }).then(() => {
-                    console.log(`Content script injected to tab ${tabId}`);
-                    // Enjeksiyon başarılı oldu, 200ms sonra mesaj gönder
-                    setTimeout(() => {
-                        chrome.tabs.sendMessage(tabId, { action: action }, (retryResponse) => {
-                            if (chrome.runtime.lastError) {
-                                console.warn(`Could not send ${action} to tab ${tabId} after injection`);
-                                clearTabIfInvalid(tabId);
-                            } else {
-                                console.log(`${action} sent to tab ${tabId} after injection`);
-                            }
-                        });
-                    }, 200);
-                }).catch(err => {
-                    console.warn(`Could not inject content script into tab ${tabId}:`, err.message);
-                    clearTabIfInvalid(tabId);
-                });
-            } else {
-                console.log(`${action} sent successfully to tab ${tabId}`);
-            }
-        });
-    } catch (error) {
-        console.warn(`Tab ${tabId} is no longer available:`, error.message);
-        clearTabIfInvalid(tabId);
+    }
+    if (response && response.acted) {
+        recordFocusSwitch();
     }
 }
 
-// Eski veya geçersiz tab ID'lerini temizle
-async function clearTabIfInvalid(tabId) {
-    if (tabId === state.tabA) {
-        await chrome.storage.local.set({ tabA: null, bridgeActive: false });
-        state.tabA = null;
-        state.bridgeActive = false;
-    }
-    
-    if (tabId === state.tabB) {
-        await chrome.storage.local.set({ tabB: null, bridgeActive: false });
-        state.tabB = null;
-        state.bridgeActive = false;
-    }
+// Odak sayacı: köprünün gerçekleştirdiği her geçişi gün bazında say.
+// Artırımlar sıraya alınır ki eşzamanlı iki geçiş birbirinin üzerine yazmasın.
+let statsQueue = Promise.resolve();
+
+function recordFocusSwitch() {
+    statsQueue = statsQueue.then(async () => {
+        const today = localDateKey();
+        const data = await chrome.storage.local.get(['statsDate', 'switchesToday']);
+        const count = data.statsDate === today ? (data.switchesToday || 0) + 1 : 1;
+        await chrome.storage.local.set({ statsDate: today, switchesToday: count });
+    }).catch(err => console.error("Focus stats update failed:", err));
+    return statsQueue;
+}
+
+function localDateKey(date = new Date()) {
+    const pad = n => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
